@@ -2,7 +2,7 @@ services:
   - type: web
     name: bloodsport-gm
     runtime: static
-    buildCommand: npm install && npm run build
+    buildCommand: npm ci && npm run build
     staticPublishPath: dist
     envVars:
       - key: NODE_VERSION

@@ -34,4 +34,12 @@ npm run build
 
 ## Deployment
 
-This app can be deployed to Render as a static site. Configure Render to serve the built `dist` folder.
+This app can be deployed to Render as a static site. The repository includes a [render.yaml](render.yaml) configuration that builds the app and serves the generated `dist` folder.
+
+Render setup:
+
+- Create a new static site on Render.
+- Connect this repository.
+- Render will use the build command from [render.yaml](render.yaml): `npm install && npm run build`.
+- The publish directory is `dist`.
+- The rewrite rule ensures client-side routes fall back to `index.html`.

@@ -92,6 +92,32 @@ select {
   background: #f8fafc;
 }
 
+input:disabled,
+select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px dashed rgba(148, 163, 184, 0.55);
+  color: rgba(226, 232, 240, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+}
+
+input:not(:disabled),
+select:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  color: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+input:not(:disabled):focus,
+select:not(:disabled):focus {
+  outline: none;
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.28);
+  background: rgba(255, 255, 255, 0.12);
+}
+
 button {
   border: none;
   border-radius: 10px;
@@ -146,9 +172,11 @@ button:hover {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+  margin-top: 0 !important;
 }
 .match-card {
   padding: 18px;
+  width:100%;
 }
 
 .match-header {
@@ -164,12 +192,13 @@ button:hover {
   flex-direction: row !important;
 }
 
-.match-actions .btn {
-  background: #5c8856;
+.match-actions .btn.primary {
+  background: #16a34a;
+  color: #fff;
 }
 
-.match-actions .btn:focus {
-  outline-color: #5c8856;
+.match-actions .btn.primary:focus {
+  outline-color: #16a34a;
 }
 
 .bets-section,

@@ -4,6 +4,7 @@ type Player = {
   id: string;
   name: string;
   character: string;
+  startingBalance: number;
 };
 
 type Bet = {
@@ -25,27 +26,41 @@ type Match = {
   playerBId: string;
   bets: Record<string, Bet>;
   result?: MatchResult;
+  betsLocked?: boolean;
 };
 
 type Game = {
   id: string;
   name: string;
-  date: string;
+  buyInAmount: number;
   players: Player[];
   matches: Match[];
+  rounds: Match[][];
+  currentRound: number;
+  date?: string;
 };
 
 const STORAGE_KEY = 'bloodsportGames';
 const LEGACY_STORAGE_KEY = 'esotereciiGames';
 
-const emptyGameForm = { name: '', date: '' };
+const emptyGameForm = { name: '', buyInAmount: '' };
 const emptyPlayerForm = { name: '', character: '' };
 
 function readStoredGames(): Game[] {
   try {
     const current = localStorage.getItem(STORAGE_KEY);
     if (current) {
-      return JSON.parse(current) as Game[];
+      const parsed = JSON.parse(current) as Game[];
+      return parsed.map((game) => ({
+        ...game,
+        buyInAmount: typeof game.buyInAmount === 'number' ? game.buyInAmount : 0,
+        rounds: Array.isArray(game.rounds) ? game.rounds : [],
+        currentRound: typeof game.currentRound === 'number' ? game.currentRound : 1,
+        players: (game.players ?? []).map((player) => ({
+          ...player,
+          startingBalance: typeof player.startingBalance === 'number' ? player.startingBalance : game.buyInAmount ?? 0,
+        })),
+      }));
     }
 
     const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
@@ -81,6 +96,55 @@ function createMatch(playerAId: string, playerBId: string, playerIds: string[]):
     playerBId,
     bets,
   };
+}
+
+function createRoundMatches(playerIds: string[], previousRounds: Match[][]): Match[] {
+  const shuffledIds = shuffle([...playerIds]);
+  const previousOpponents = new Map<string, Set<string>>();
+
+  previousRounds.forEach((roundMatches) => {
+    roundMatches.forEach((match) => {
+      const addOpponent = (playerId: string, opponentId: string) => {
+        const opponents = previousOpponents.get(playerId) ?? new Set<string>();
+        opponents.add(opponentId);
+        previousOpponents.set(playerId, opponents);
+      };
+
+      addOpponent(match.playerAId, match.playerBId);
+      addOpponent(match.playerBId, match.playerAId);
+    });
+  });
+
+  const canFace = (playerId: string, opponentId: string) => !previousOpponents.get(playerId)?.has(opponentId);
+
+  const pairs: Array<[string, string]> = [];
+  const remainingIds = [...shuffledIds];
+
+  const search = (ids: string[], currentPairs: Array<[string, string]>): Array<[string, string]> | null => {
+    if (ids.length === 0) {
+      return currentPairs;
+    }
+
+    const playerId = ids[0];
+    const availableOpponents = shuffle(ids.slice(1).filter((opponentId) => canFace(playerId, opponentId)));
+
+    for (const opponentId of availableOpponents) {
+      const nextIds = ids.filter((candidateId) => candidateId !== playerId && candidateId !== opponentId);
+      const result = search(nextIds, [...currentPairs, [playerId, opponentId]]);
+      if (result) {
+        return result;
+      }
+    }
+
+    return null;
+  };
+
+  const foundPairs = search(remainingIds, []);
+  if (!foundPairs) {
+    return [];
+  }
+
+  return foundPairs.map(([playerAId, playerBId]) => createMatch(playerAId, playerBId, playerIds));
 }
 
 function App() {
@@ -153,21 +217,30 @@ function App() {
     () => games.find((game) => game.id === selectedGameId) ?? null,
     [games, selectedGameId]
   );
+  const [viewRound, setViewRound] = useState<number | null>(null);
 
   // Sync URL with state when selecting game or match
   useEffect(() => {
+    if (!selectedGameId) {
+      return;
+    }
+
     const buildUrl = () => {
-      if (!selectedGameId) return '/';
-      if (!selectedMatchId) return `/game/${selectedGameId}`;
+      if (!selectedMatchId) {
+        if (viewRound && viewRound !== selectedGame?.currentRound) {
+          return `/game/${selectedGameId}/round/${viewRound}`;
+        }
+        return `/game/${selectedGameId}`;
+      }
       return `/game/${selectedGameId}/match/${selectedMatchId}`;
     };
     const url = buildUrl();
     try {
-      window.history.pushState({ selectedGameId, selectedMatchId }, '', url);
+      window.history.pushState({ selectedGameId, selectedMatchId, viewRound }, '', url);
     } catch (e) {
       // ignore
     }
-  }, [selectedGameId, selectedMatchId]);
+  }, [selectedGameId, selectedMatchId, selectedGame, viewRound]);
 
   // Handle back/forward navigation
   useEffect(() => {
@@ -181,11 +254,22 @@ function App() {
           setFocusTarget('matchDetail');
         } else {
           setSelectedMatchId(null);
+          if (parts[2] === 'round' && parts[3]) {
+            const roundNumber = Number(parts[3]);
+            if (!Number.isNaN(roundNumber) && roundNumber > 0) {
+              setViewRound(roundNumber);
+            } else {
+              setViewRound(null);
+            }
+          } else {
+            setViewRound(null);
+          }
           setFocusTarget('matchSummary');
         }
       } else {
         setSelectedGameId(null);
         setSelectedMatchId(null);
+        setViewRound(null);
         setFocusTarget('gameName');
       }
     };
@@ -201,21 +285,25 @@ function App() {
     setGames((current) => current.map((game) => (game.id === updated.id ? updated : game)));
   };
 
-  const handleCreateGame = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleCreateGame = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     const name = gameForm.name.trim();
-    const date = gameForm.date;
-    if (!name || !date) {
+    const buyInAmountInput = gameForm.buyInAmount.trim();
+    const buyInAmount = buyInAmountInput === '' ? 0 : Number(buyInAmountInput);
+
+    if (!name || Number.isNaN(buyInAmount) || buyInAmount < 0) {
       return;
     }
 
     const newGame: Game = {
       id: `${Date.now()}`,
       name,
-      date,
+      buyInAmount,
       players: [],
       matches: [],
+      rounds: [],
+      currentRound: 1,
     };
 
     setGames((current) => [...current, newGame]);
@@ -225,7 +313,7 @@ function App() {
     setFocusTarget('playerName');
   };
 
-  const handleAddPlayer = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleAddPlayer = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!selectedGame) {
       return;
@@ -241,6 +329,7 @@ function App() {
       id: `${Date.now()}-${name}`,
       name,
       character,
+      startingBalance: selectedGame.buyInAmount ?? 0,
     };
 
     const updatedGame = {
@@ -273,14 +362,13 @@ function App() {
       return;
     }
 
-    const playerIds = shuffle(selectedGame.players.map((player) => player.id));
-    const matches: Match[] = [];
-
-    for (let index = 0; index < playerIds.length; index += 2) {
-      matches.push(createMatch(playerIds[index], playerIds[index + 1], playerIds));
+    const matches = createRoundMatches(selectedGame.players.map((player) => player.id), []);
+    if (matches.length === 0) {
+      alert('Could not build a valid set of pairings for this round.');
+      return;
     }
 
-    updateGame({ ...selectedGame, matches });
+    updateGame({ ...selectedGame, matches, rounds: [], currentRound: 1 });
     setFocusTarget('matchSummary');
     // push url to indicate matches list now present
     try {
@@ -301,7 +389,7 @@ function App() {
     }
 
     const updatedMatches = selectedGame.matches.map((match) => {
-      if (match.id !== matchId || match.result) {
+      if (match.id !== matchId || match.result || match.betsLocked) {
         return match;
       }
 
@@ -317,6 +405,44 @@ function App() {
           ...match.bets,
           [bettorId]: nextBet,
         },
+      };
+    });
+
+    updateGame({ ...selectedGame, matches: updatedMatches });
+  };
+
+  const handleSaveBets = (matchId: string) => {
+    if (!selectedGame) {
+      return;
+    }
+
+    const updatedMatches = selectedGame.matches.map((match) => {
+      if (match.id !== matchId) {
+        return match;
+      }
+
+      return {
+        ...match,
+        betsLocked: true,
+      };
+    });
+
+    updateGame({ ...selectedGame, matches: updatedMatches });
+  };
+
+  const handleEditBets = (matchId: string) => {
+    if (!selectedGame) {
+      return;
+    }
+
+    const updatedMatches = selectedGame.matches.map((match) => {
+      if (match.id !== matchId) {
+        return match;
+      }
+
+      return {
+        ...match,
+        betsLocked: false,
       };
     });
 
@@ -366,7 +492,7 @@ function App() {
     }
 
     const updatedMatches = selectedGame.matches.map((match) => {
-      if (match.id !== matchId || match.result) {
+      if (match.id !== matchId || match.result || !match.betsLocked) {
         return match;
       }
 
@@ -377,31 +503,103 @@ function App() {
     updateGame({ ...selectedGame, matches: updatedMatches });
   };
 
+  const handleCreateNextRound = () => {
+    if (!selectedGame) {
+      return;
+    }
+
+    const hasIncompleteMatches = selectedGame.matches.some((match) => !match.result);
+    if (hasIncompleteMatches) {
+      alert('Finish the current round before starting a new one.');
+      return;
+    }
+
+    if (!confirm('Start a new round?')) {
+      return;
+    }
+
+    const nextMatches = createRoundMatches(
+      selectedGame.players.map((player) => player.id),
+      [...selectedGame.rounds, selectedGame.matches]
+    );
+
+    if (nextMatches.length === 0) {
+      alert('Could not build a valid set of pairings for the next round.');
+      return;
+    }
+
+    const nextRoundNumber = selectedGame.currentRound + 1;
+    updateGame({
+      ...selectedGame,
+      rounds: [...selectedGame.rounds, selectedGame.matches],
+      matches: nextMatches,
+      currentRound: nextRoundNumber,
+    });
+    setViewRound(nextRoundNumber);
+    setFocusTarget('matchSummary');
+    try {
+      window.history.pushState({ selectedGameId }, '', `/game/${selectedGame.id}`);
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedGame) {
+      return;
+    }
+
+    if (viewRound === null || viewRound > selectedGame.currentRound || viewRound < 1) {
+      setViewRound(selectedGame.currentRound);
+    }
+  }, [selectedGame, viewRound]);
+
+  useEffect(() => {
+    if (!selectedGame || viewRound === null) {
+      return;
+    }
+
+    const url = viewRound === selectedGame.currentRound
+      ? `/game/${selectedGame.id}`
+      : `/game/${selectedGame.id}/round/${viewRound}`;
+
+    try {
+      window.history.replaceState({ selectedGameId, selectedMatchId, viewRound }, '', url);
+    } catch (e) {
+      // ignore
+    }
+  }, [selectedGame, selectedGameId, selectedMatchId, viewRound]);
+
+  const canGoToPreviousRound = Boolean(selectedGame && viewRound !== null && viewRound > 1);
+  const canGoToCurrentRound = Boolean(selectedGame && viewRound !== null && viewRound !== selectedGame.currentRound);
+  const canGoToNextRound = Boolean(selectedGame && viewRound !== null && selectedGame.currentRound > 2 && viewRound < selectedGame.currentRound - 1);
+
   const leaderboard = useMemo(() => {
     if (!selectedGame) {
       return [];
     }
 
-    const totals: Record<string, number> = {};
+    const balances: Record<string, number> = {};
     selectedGame.players.forEach((player) => {
-      totals[player.id] = 0;
+      balances[player.id] = player.startingBalance ?? 0;
     });
 
-    selectedGame.matches.forEach((match) => {
+    const allMatches = [...selectedGame.rounds.flat(), ...selectedGame.matches];
+    allMatches.forEach((match) => {
       if (!match.result) {
         return;
       }
       Object.entries(match.result.net).forEach(([bettorId, value]) => {
-        totals[bettorId] = (totals[bettorId] || 0) + value;
+        balances[bettorId] = Number(((balances[bettorId] || 0) + value).toFixed(2));
       });
     });
 
     return selectedGame.players
       .map((player) => ({
         player,
-        net: Number((totals[player.id] || 0).toFixed(2)),
+        balance: Number((balances[player.id] || 0).toFixed(2)),
       }))
-      .sort((a, b) => b.net - a.net);
+      .sort((a, b) => b.balance - a.balance);
   }, [selectedGame]);
 
   const handleDeleteGame = (gameId: string) => {
@@ -430,13 +628,15 @@ function App() {
           />
         </label>
         <label>
-          Date
+          Buy-in amount (optional)
           <input
-            type="text"
-            value={gameForm.date}
-            onChange={(event) => setGameForm({ ...gameForm, date: event.target.value })}
-            placeholder="YYYY-MM-DD"
-            aria-label="Game date (YYYY-MM-DD)"
+            type="number"
+            min={0}
+            step="0.01"
+            value={gameForm.buyInAmount}
+            onChange={(event) => setGameForm({ ...gameForm, buyInAmount: event.target.value })}
+            placeholder="0.00"
+            aria-label="Buy-in amount"
           />
         </label>
         <button type="submit" className="btn">Start Game</button>
@@ -458,7 +658,7 @@ function App() {
                   }}
                 >
                   <strong>{game.name}</strong>
-                  <span>{game.date}</span>
+                  <span>{game.buyInAmount != null ? `Buy-in: $${game.buyInAmount.toFixed(2)}` : 'Buy-in: $0.00'}</span>
                 </button>
                 <button className="btn small danger icon-btn" onClick={() => handleDeleteGame(game.id)} aria-label={`Delete ${game.name}`}>
                   X
@@ -478,8 +678,11 @@ function App() {
       return null;
     }
 
-    const matchLabel = `${playerA.name} (${playerA.character}) vs ${playerB.name} (${playerB.character})`;
+    const matchLabel = `${playerA.name} as ${playerA.character} vs ${playerB.name} as ${playerB.character}`;
     const isCompleted = Boolean(match.result);
+    const activeBettorCount = Object.values(match.bets).filter((bet) => (bet.amount || 0) > 0).length;
+    const bettorCountOnPlayerA = Object.values(match.bets).filter((bet) => bet.targetId === match.playerAId && (bet.amount || 0) > 0).length;
+    const bettorCountOnPlayerB = Object.values(match.bets).filter((bet) => bet.targetId === match.playerBId && (bet.amount || 0) > 0).length;
 
     return (
       <button
@@ -490,7 +693,7 @@ function App() {
           setSelectedMatchId(match.id);
           setFocusTarget('matchDetail');
         }}
-        aria-label={`Open match details for ${playerA.name} vs ${playerB.name}`}
+        aria-label={`Open match details for ${playerA.name} as ${playerA.character} vs ${playerB.name} as ${playerB.character}`}
       >
         <div className="match-header">
           <div>
@@ -500,11 +703,28 @@ function App() {
                 ? `Finished: ${selectedGame.players.find((player) => player.id === match.result?.winnerId)?.name ?? 'Winner'}`
                 : 'Upcoming'}
             </p>
+            <p className="muted">
+              {bettorCountOnPlayerA}:{bettorCountOnPlayerB}
+            </p>
           </div>
         </div>
       </button>
     );
   };
+
+  const roundMatches = useMemo(() => {
+    if (!selectedGame || viewRound === null) {
+      return [];
+    }
+
+    if (viewRound === selectedGame.currentRound) {
+      return selectedGame.matches;
+    }
+
+    return selectedGame.rounds[viewRound - 1] ?? [];
+  }, [selectedGame, viewRound]);
+
+  const displayedRoundCount = selectedGame ? Math.max(1, selectedGame.currentRound) : 1;
 
   const renderMatchDetail = (match: Match) => {
     const playerA = selectedGame?.players.find((player) => player.id === match.playerAId);
@@ -514,12 +734,19 @@ function App() {
     }
 
     const isCompleted = Boolean(match.result);
+    const isLocked = Boolean(match.betsLocked);
+    const totalBet = Object.values(match.bets).reduce((sum, bet) => sum + (bet.amount || 0), 0);
+    const betsOnPlayerA = Object.values(match.bets).reduce((sum, bet) => sum + (bet.targetId === match.playerAId ? (bet.amount || 0) : 0), 0);
+    const betsOnPlayerB = Object.values(match.bets).reduce((sum, bet) => sum + (bet.targetId === match.playerBId ? (bet.amount || 0) : 0), 0);
+    const bettorCountOnPlayerA = Object.values(match.bets).filter((bet) => bet.targetId === match.playerAId && (bet.amount || 0) > 0).length;
+    const bettorCountOnPlayerB = Object.values(match.bets).filter((bet) => bet.targetId === match.playerBId && (bet.amount || 0) > 0).length;
+    const displayTotalBet = isCompleted && match.result ? match.result.totalBet : totalBet;
 
     return (
       <section className="card match-detail-page" ref={matchDetailRef}>
         <div className="match-header">
           <div>
-            <h2>{`${playerA.name} vs ${playerB.name}`}</h2>
+            <h2>{`${playerA.name} as ${playerA.character} vs ${playerB.name} as ${playerB.character}`}</h2>
             <p className={isCompleted ? 'tag completed' : 'tag upcoming'}>
               {isCompleted ? 'Finished' : 'Upcoming'}
             </p>
@@ -527,12 +754,23 @@ function App() {
           <div className="match-actions">
             {!isCompleted && (
               <>
-                <button type="button" className="btn" onClick={() => handleSetWinner(match.id, match.playerAId)}>
-                  Mark {playerA.name} Winner
-                </button>
-                <button type="button" className="btn" onClick={() => handleSetWinner(match.id, match.playerBId)}>
-                  Mark {playerB.name} Winner
-                </button>
+                {!isLocked ? (
+                  <button type="button" className="btn" onClick={() => handleSaveBets(match.id)}>
+                    Save Bets
+                  </button>
+                ) : (
+                  <>
+                    <button type="button" className="btn" onClick={() => handleEditBets(match.id)}>
+                      Edit Bets
+                    </button>
+                    <button type="button" className="btn primary" onClick={() => handleSetWinner(match.id, match.playerAId)}>
+                      Mark {playerA.name} as {playerA.character} Winner
+                    </button>
+                    <button type="button" className="btn primary" onClick={() => handleSetWinner(match.id, match.playerBId)}>
+                      Mark {playerB.name} as {playerB.character} Winner
+                    </button>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -540,12 +778,16 @@ function App() {
 
         <div className="section">
           <h3>{isCompleted ? 'Results' : 'Bets'}</h3>
-          {isCompleted && match.result && (
+          {(isCompleted && match.result) || !isCompleted ? (
             <div className="summary-card">
-              <div><strong>Total pot:</strong> ${match.result.totalBet.toFixed(2)}</div>
-              <div><strong>Winner:</strong> {selectedGame.players.find((player) => player.id === match.result?.winnerId)?.name ?? 'Winner'}</div>
+              <div><strong>Total pot:</strong> ${displayTotalBet.toFixed(2)}</div>
+              <div><strong>{playerA.name} as {playerA.character} total:</strong> ${betsOnPlayerA.toFixed(2)} ({bettorCountOnPlayerA} bettor{bettorCountOnPlayerA === 1 ? '' : 's'})</div>
+              <div><strong>{playerB.name} as {playerB.character} total:</strong> ${betsOnPlayerB.toFixed(2)} ({bettorCountOnPlayerB} bettor{bettorCountOnPlayerB === 1 ? '' : 's'})</div>
+              {isCompleted && match.result && (
+                <div><strong>Winner:</strong> {selectedGame.players.find((player) => player.id === match.result?.winnerId)?.name ?? 'Winner'}</div>
+              )}
             </div>
-          )}
+          ) : null}
           <div className="bets-list">
             {selectedGame.players.map((bettor) => {
               const bet = match.bets[bettor.id] || { targetId: match.playerAId, amount: 0 };
@@ -556,7 +798,7 @@ function App() {
 
               return (
                 <div className={`bet-card ${inMatch ? 'in-match' : ''}`} key={bettor.id}>
-                  <div className="bettor-name">{inMatch ? '⚔️' : ''} {bettor.name}</div>
+                  <div className="bettor-name">{inMatch ? '⚔️' : ''} {bettor.name} as {bettor.character}</div>
                   {isCompleted ? (
                     <>
                       <div className="bet-field">
@@ -583,7 +825,8 @@ function App() {
                         <input
                           type="number"
                           min={0}
-                          value={bet.amount}
+                          value={bet.amount || ''}
+                          disabled={isLocked}
                           aria-label={`Amount for ${bettor.name}`}
                           onChange={(event) => handleBetUpdate(match.id, bettor.id, 'amount', event.target.value)}
                         />
@@ -592,11 +835,12 @@ function App() {
                         <span className="field-label">Bet On</span>
                         <select
                           value={bet.targetId}
+                          disabled={isLocked}
                           aria-label={`Bet target for ${bettor.name}`}
                           onChange={(event) => handleBetUpdate(match.id, bettor.id, 'targetId', event.target.value)}
                         >
-                          <option value={playerA.id}>{playerA.name}</option>
-                          <option value={playerB.id}>{playerB.name}</option>
+                          <option value={playerA.id}>{playerA.name} as {playerA.character}</option>
+                          <option value={playerB.id}>{playerB.name} as {playerB.character}</option>
                         </select>
                       </label>
                     </>
@@ -607,18 +851,6 @@ function App() {
           </div>
         </div>
 
-        <div className="section-actions">
-          <button
-            type="button"
-            className="btn"
-            onClick={() => {
-              setSelectedMatchId(null);
-              setFocusTarget('matchSummary');
-            }}
-          >
-            ← Back to game
-          </button>
-        </div>
       </section>
     );
   };
@@ -629,7 +861,9 @@ function App() {
     }
 
     // Page 2: when a game is selected and no match is selected
-    const activeMatch = selectedMatchId ? selectedGame.matches.find((m) => m.id === selectedMatchId) ?? null : null;
+    const activeMatch = selectedMatchId
+      ? roundMatches.find((m) => m.id === selectedMatchId) ?? null
+      : null;
     const hasMatches = selectedGame.matches && selectedGame.matches.length > 0;
 
     // If a match is selected, render the match detail page (page 3)
@@ -670,15 +904,15 @@ function App() {
         <section className="card selected-game-card">
           <div className="game-header">
             <div>
-              <h2>{selectedGame.name}</h2>
-              <p>{selectedGame.date}</p>
+              <h2>{selectedGame.name} (Round {viewRound ?? selectedGame.currentRound})</h2>
+              <p>Buy-in: ${selectedGame.buyInAmount.toFixed(2)} each</p>
             </div>
           </div>
 
           {!hasMatches ? (
             // Setup view: add players and then randomize
             <div className="section">
-              <h3>Add players</h3>
+              <h3>Players ({selectedGame.players.length})</h3>
               <form onSubmit={handleAddPlayer} className="form-grid small-grid inner-grid">
                 <label>
                   Player name
@@ -733,20 +967,56 @@ function App() {
             <>
               <div className="section">
                 <h3>Matches</h3>
-                <p className="muted">Tap a match to open its full view</p>
-                <div className="matches-list" ref={matchesListRef}>
-                  {selectedGame.matches.map((match) => renderMatch(match))}
+                <div className="section-actions">
+                {canGoToPreviousRound && (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setViewRound((current) => (current ? current - 1 : 1))}
+                  >
+                    ← Previous Round
+                  </button>
+                )}
+                {canGoToNextRound && (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setViewRound((current) => (current ? current + 1 : 1))}
+                  >
+                    Next Round →
+                  </button>
+                )}
+                {canGoToCurrentRound && (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setViewRound(selectedGame.currentRound)}
+                  >
+                    Current Round →
+                  </button>
+                )}
                 </div>
+                <p className="muted">Viewing Round {viewRound ?? selectedGame.currentRound}. Tap a match to open its full view.</p>
+                <div className="matches-list" ref={matchesListRef}>
+                  {roundMatches.map((match) => renderMatch(match))}
+                </div>
+                {selectedGame.matches.length > 0 && selectedGame.matches.every((match) => match.result) && (
+                  <div className="section-actions">
+                    <button type="button" className="btn primary" onClick={handleCreateNextRound}>
+                      Create Next Round
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="section">
                 <h3>Leaderboard</h3>
                 {leaderboard.length > 0 ? (
                   <ul className="entity-list">
-                    {leaderboard.map(({ player, net }) => (
+                    {leaderboard.map(({ player, balance }) => (
                       <li className="entity-card" key={player.id}>
                         <div>{player.name} as <strong>{player.character}</strong></div>
-                        <div className={`leader-net ${net >= 0 ? 'positive' : 'negative'}`}>${net.toFixed(2)}</div>
+                        <div className={`leader-net ${balance >= 0 ? 'positive' : 'negative'}`}><strong>${balance.toFixed(2)}</strong></div>
                       </li>
                     ))}
                   </ul>

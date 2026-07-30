@@ -285,6 +285,42 @@ function App() {
     setGames((current) => current.map((game) => (game.id === updated.id ? updated : game)));
   };
 
+  const updateMatchInGame = (game: Game, matchId: string, updater: (match: Match) => Match) => {
+    const currentMatchIndex = game.matches.findIndex((match) => match.id === matchId);
+    if (currentMatchIndex >= 0) {
+      const currentMatch = game.matches[currentMatchIndex];
+      const nextMatch = updater(currentMatch);
+      if (nextMatch === currentMatch) {
+        return game;
+      }
+
+      const nextMatches = [...game.matches];
+      nextMatches[currentMatchIndex] = nextMatch;
+      return { ...game, matches: nextMatches };
+    }
+
+    let changed = false;
+    const nextRounds = game.rounds.map((roundMatches) => {
+      const roundMatchIndex = roundMatches.findIndex((match) => match.id === matchId);
+      if (roundMatchIndex < 0) {
+        return roundMatches;
+      }
+
+      const currentMatch = roundMatches[roundMatchIndex];
+      const nextMatch = updater(currentMatch);
+      if (nextMatch === currentMatch) {
+        return roundMatches;
+      }
+
+      changed = true;
+      const nextRoundMatches = [...roundMatches];
+      nextRoundMatches[roundMatchIndex] = nextMatch;
+      return nextRoundMatches;
+    });
+
+    return changed ? { ...game, rounds: nextRounds } : game;
+  };
+
   const handleCreateGame = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -388,7 +424,7 @@ function App() {
       return;
     }
 
-    const updatedMatches = selectedGame.matches.map((match) => {
+    const updatedGame = updateMatchInGame(selectedGame, matchId, (match) => {
       if (match.id !== matchId || match.result || match.betsLocked) {
         return match;
       }
@@ -408,7 +444,9 @@ function App() {
       };
     });
 
-    updateGame({ ...selectedGame, matches: updatedMatches });
+    if (updatedGame !== selectedGame) {
+      updateGame(updatedGame);
+    }
   };
 
   const handleSaveBets = (matchId: string) => {
@@ -416,7 +454,7 @@ function App() {
       return;
     }
 
-    const updatedMatches = selectedGame.matches.map((match) => {
+    const updatedGame = updateMatchInGame(selectedGame, matchId, (match) => {
       if (match.id !== matchId) {
         return match;
       }
@@ -427,7 +465,9 @@ function App() {
       };
     });
 
-    updateGame({ ...selectedGame, matches: updatedMatches });
+    if (updatedGame !== selectedGame) {
+      updateGame(updatedGame);
+    }
   };
 
   const handleEditBets = (matchId: string) => {
@@ -435,7 +475,7 @@ function App() {
       return;
     }
 
-    const updatedMatches = selectedGame.matches.map((match) => {
+    const updatedGame = updateMatchInGame(selectedGame, matchId, (match) => {
       if (match.id !== matchId) {
         return match;
       }
@@ -446,10 +486,13 @@ function App() {
       };
     });
 
-    updateGame({ ...selectedGame, matches: updatedMatches });
+    if (updatedGame !== selectedGame) {
+      updateGame(updatedGame);
+    }
   };
 
-  const computeMatchResult = (bets: Record<string, Bet>, winnerId: string) => {
+  const computeMatchResult = (match: Match, winnerId: string) => {
+    const bets = match.bets;
     const totalBet = Object.values(bets).reduce((sum, bet) => sum + (bet.amount || 0), 0);
     const totalWinnerBet = Object.values(bets).reduce(
       (sum, bet) => sum + (bet.targetId === winnerId ? bet.amount : 0),
@@ -477,6 +520,12 @@ function App() {
       }
     });
 
+    const loserId = match.playerAId === winnerId ? match.playerBId : match.playerBId === winnerId ? match.playerAId : null;
+    if (loserId) {
+      net[winnerId] = Number(((net[winnerId] ?? 0) + 20).toFixed(2));
+      net[loserId] = Number(((net[loserId] ?? 0) + 10).toFixed(2));
+    }
+
     return {
       winnerId,
       payout,
@@ -491,16 +540,18 @@ function App() {
       return;
     }
 
-    const updatedMatches = selectedGame.matches.map((match) => {
+    const updatedGame = updateMatchInGame(selectedGame, matchId, (match) => {
       if (match.id !== matchId || match.result || !match.betsLocked) {
         return match;
       }
 
-      const result = computeMatchResult(match.bets, winnerId);
+      const result = computeMatchResult(match, winnerId);
       return { ...match, result };
     });
 
-    updateGame({ ...selectedGame, matches: updatedMatches });
+    if (updatedGame !== selectedGame) {
+      updateGame(updatedGame);
+    }
   };
 
   const handleCreateNextRound = () => {
@@ -896,6 +947,9 @@ function App() {
             setSelectedMatchId(null);
             setSelectedGameId(null);
             setFocusTarget('gameName');
+            try {
+              window.history.pushState({}, '', '/');
+            } catch (e) {}
           }}
         >
           ← Back to games

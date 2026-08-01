@@ -499,6 +499,8 @@ function App() {
       0
     );
 
+    const roundUpDollar = (value: number) => Math.ceil(value);
+
     const payout: Record<string, number> = {};
     const net: Record<string, number> = {};
 
@@ -512,18 +514,18 @@ function App() {
 
       if (bet.targetId === winnerId && totalWinnerBet > 0) {
         const winningPayout = (betAmount / totalWinnerBet) * totalBet;
-        payout[bettorId] = Number(winningPayout.toFixed(2));
-        net[bettorId] = Number((winningPayout - betAmount).toFixed(2));
+        payout[bettorId] = roundUpDollar(winningPayout);
+        net[bettorId] = roundUpDollar(winningPayout - betAmount);
       } else {
         payout[bettorId] = 0;
-        net[bettorId] = -betAmount;
+        net[bettorId] = roundUpDollar(-betAmount);
       }
     });
 
     const loserId = match.playerAId === winnerId ? match.playerBId : match.playerBId === winnerId ? match.playerAId : null;
     if (loserId) {
-      net[winnerId] = Number(((net[winnerId] ?? 0) + 20).toFixed(2));
-      net[loserId] = Number(((net[loserId] ?? 0) + 10).toFixed(2));
+      net[winnerId] = roundUpDollar((net[winnerId] ?? 0) + 20);
+      net[loserId] = roundUpDollar((net[loserId] ?? 0) + 10);
     }
 
     return {
